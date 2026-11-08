@@ -4,8 +4,6 @@ FuckClip 是一个 Android 剪贴板权限管理模块。它通过 [LibXposed AP
 
 [简体中文](#安装与激活) · [English](#english) · [Releases](https://github.com/wangyupwp/FuckClip/releases) · [MIT License](LICENSE)
 
-当前源码的默认构建版本为 **v1.0.6（10006）**。最低安装版本是 **Android 10（API 29）**，编译和目标 SDK 均为 **API 35**。剪贴板拦截和预览的实际兼容性取决于系统实现及所用的 Xposed 框架。
-
 ## 安装与激活
 
 1. 准备已 Root 的 Android 设备，安装支持 LibXposed API 102 和系统进程作用域的 LSPosed 或兼容框架。
@@ -55,18 +53,6 @@ python3 tools/check_translations.py
 
 Windows PowerShell 使用 `python` 和 `.\gradlew.bat`。APK 输出位于 `app/build/outputs/apk/`。构建会生成 `arm64-v8a`、`armeabi-v7a`、`x86_64` 和 `universal` 四种 APK。
 
-### Release 签名
-
-`assembleRelease` 生成待签名 APK。维护者在环境中设置 `KEYSTORE_FILE`、`KEYSTORE_PASSWORD`、`KEY_ALIAS` 和 `KEY_PASSWORD` 后，可以使用项目脚本签名并验证证书链。
-
-```bash
-python3 tools/sign_release.py --apksigner "$ANDROID_HOME/build-tools/35.0.0/apksigner" \
-  --lineage /path/to/release.lineage \
-  app/build/outputs/apk/release/app-universal-release-unsigned.apk FuckClip-universal-release.apk
-```
-
-发布脚本使用 AppMarket 的发布证书，并把 `--lineage` 指定的轮换证明写入 APK。轮换链连接旧版 FuckClip 的内置发布证书和当前证书。用该旧证书签署的版本可使用更高版本号的轮换包覆盖升级；使用其他证书签署的安装包需要单独迁移。GitHub Actions 使用 `KEYSTORE_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD` 和 `SIGNING_LINEAGE_BASE64` 五个仓库 Secrets，最后一项为轮换证明文件的 Base64 编码。
-
 ## 项目结构
 
 | 模块 | 职责 |
@@ -84,7 +70,7 @@ FuckClip adds per-app **Ask**, **Allow**, and **Deny** policies to Android clipb
 - **Install** a signed Release APK on a rooted device with a LibXposed API 102 framework. Enable FuckClip for **System Framework** (`system` / `system_server`) and reboot. Android 10 (API 29) is the minimum install version.
 - **Read preview** shows eligible clipboard text in the authorization dialog on supported system implementations. Sensitive clips, other users' clips, and locked sessions are excluded. If the clip changes after preview, the request returns no data. A successful one-time grant can be reused briefly for the same clip only.
 - **Audit log** keeps the latest 100 entries in the main view and older entries in a paged archive. Both are stored in a private SQLite database excluded from automatic backup. Enable **Log keep-alive** under **Settings → Data** for background log reception through a foreground notification.
-- **Build** with JDK 17, Android SDK 35, and the Gradle wrapper. Run `./gradlew assembleDebug` for a debug APK or follow [Release signing](#release-签名) for signed packages.
+- **Build** with JDK 17, Android SDK 35, and the Gradle wrapper. Run `./gradlew assembleDebug` for a debug APK.
 
 ## 许可与致谢
 
