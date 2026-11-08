@@ -77,6 +77,7 @@ captures/
 *.keystore
 /.deploy-keys/
 *.jks
+/keystore/release.lineage
 
 # ====================================================================
 # OS-specific Files

@@ -61,10 +61,11 @@ Windows PowerShell 使用 `python` 和 `.\gradlew.bat`。APK 输出位于 `app/b
 
 ```bash
 python3 tools/sign_release.py --apksigner "$ANDROID_HOME/build-tools/35.0.0/apksigner" \
+  --lineage /path/to/release.lineage \
   app/build/outputs/apk/release/app-universal-release-unsigned.apk FuckClip-universal-release.apk
 ```
 
-发布脚本使用 AppMarket 的发布证书，并把公开轮换证明 [`keystore/release.lineage`](keystore/release.lineage) 写入 APK。轮换链连接旧版 FuckClip 的内置发布证书和当前证书。用该旧证书签署的版本可使用更高版本号的轮换包覆盖升级；使用其他证书签署的安装包需要单独迁移。GitHub Actions 使用 `KEYSTORE_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS` 和 `KEY_PASSWORD` 四个仓库 Secrets。
+发布脚本使用 AppMarket 的发布证书，并把 `--lineage` 指定的轮换证明写入 APK。轮换链连接旧版 FuckClip 的内置发布证书和当前证书。用该旧证书签署的版本可使用更高版本号的轮换包覆盖升级；使用其他证书签署的安装包需要单独迁移。GitHub Actions 使用 `KEYSTORE_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD` 和 `SIGNING_LINEAGE_BASE64` 五个仓库 Secrets，最后一项为轮换证明文件的 Base64 编码。
 
 ## 项目结构
 

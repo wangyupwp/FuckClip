@@ -8,7 +8,6 @@ import subprocess
 import tempfile
 
 
-LINEAGE = Path(__file__).resolve().parents[1] / "keystore" / "release.lineage"
 OLD_CERT = "d4e9323321f13e9c9096c2a907accff49c72c8c232bc85fd7643adb2c51fef5a"
 NEW_CERT = "4a5c8f131326a4a31a724c0946ea168fd9d17de321db47b8ea48cd5a24f6ca08"
 
@@ -24,10 +23,13 @@ def fingerprints(report):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apksigner", required=True, type=Path)
+    parser.add_argument("--lineage", required=True, type=Path, help="Path to the signing rotation proof")
     parser.add_argument("unsigned_apk", type=Path)
     parser.add_argument("signed_apk", type=Path)
     args = parser.parse_args()
 
+    if not args.lineage.is_file():
+        parser.error(f"Signing rotation proof not found: {args.lineage}")
     required = ("KEYSTORE_FILE", "KEYSTORE_PASSWORD", "KEY_ALIAS", "KEY_PASSWORD")
     missing = [name for name in required if not os.environ.get(name)]
     if missing:
@@ -44,7 +46,7 @@ def main():
             args.apksigner, "sign", "--ks", os.environ["KEYSTORE_FILE"],
             "--ks-key-alias", os.environ["KEY_ALIAS"],
             "--ks-pass", "env:KEYSTORE_PASSWORD", "--key-pass", "env:KEY_PASSWORD",
-            "--lineage", LINEAGE, "--rotation-min-sdk-version", "28",
+            "--lineage", args.lineage, "--rotation-min-sdk-version", "28",
             "--v1-signing-enabled", "false", "--v2-signing-enabled", "false",
             "--v3-signing-enabled", "true", "--v4-signing-enabled", "false",
             "--out", signed, args.unsigned_apk,
