@@ -3,7 +3,7 @@ name: Release Build
 # 推送 tag（如 v1.0.0 或 1.0.0）或手动触发时：
 # 1. 提取当前版本号与上一版本 tag。
 # 2. 自动汇总两次版本之间合并的 Pull Requests 作为 Release 说明。
-# 3. 自动使用内置永久签名证书（或自定义 Secret）编译签名 APK 并校验。
+# 3. 使用 AppMarket 密钥及签名轮换证明签署 APK 并校验。
 # 4. 自动发布 GitHub Release 并上传安装包。
 
 on:
@@ -14,9 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v1.0.0)'
+        description: 'Release Tag (e.g. v1.0.6)'
         required: true
-        default: 'v1.0.0'
+        default: 'v1.0.6'
 
 concurrency:
   group: release-${{ github.ref }}
@@ -58,6 +58,10 @@ jobs:
           VERSION_NAME="$(echo "$CLEAN_TAG" | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+')"
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_NAME"
           VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          if [ "$VERSION_CODE" -le 10000 ]; then
+            echo "::error::Rotated releases must have a version code greater than v1.0.0 (10000)."
+            exit 1
+          fi
 
           PRERELEASE=""
           if [[ "$CLEAN_TAG" == *"-"* ]]; then
@@ -155,52 +159,41 @@ jobs:
       - name: Make Gradlew Executable
         run: chmod +x gradlew
 
+      - name: Install Android signing tools
+        run: sdkmanager "build-tools;35.0.0"
+
       - name: Prepare signing keystore
-        id: keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "Using custom secret release keystore..."
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-            echo "KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
-            echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-            echo "KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
-            echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
-          elif [ -f "keystore/release.jks" ]; then
-            echo "Using repository permanent release keystore (free & automatic)..."
-            echo "KEYSTORE_FILE=$(pwd)/keystore/release.jks" >> "$GITHUB_ENV"
-            echo "KEYSTORE_PASSWORD=fuckclip" >> "$GITHUB_ENV"
-            echo "KEY_ALIAS=fuckclip" >> "$GITHUB_ENV"
-            echo "KEY_PASSWORD=fuckclip" >> "$GITHUB_ENV"
-          else
-            echo "::error::No release keystore found."
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Configure KEYSTORE_BASE64 with the AppMarket release keystore."
             exit 1
           fi
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
 
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --stacktrace
 
       - name: Build Release APK
-        env:
-          UPDATE_CHECK_TOKEN: ${{ secrets.UPDATE_CHECK_TOKEN }}
         run: >
           ./gradlew assembleRelease --stacktrace
           -PappVersionName=${{ steps.version.outputs.version_name }}
           -PappVersionCode=${{ steps.version.outputs.version_code }}
-          -PupdateCheckToken="${{ secrets.UPDATE_CHECK_TOKEN }}"
 
       - name: Sign, verify and rename APK
         id: apk
         env:
           VER_STR: ${{ steps.version.outputs.version_string }}
           VER_CODE: ${{ steps.version.outputs.version_code }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEYSTORE_FILE: ${{ runner.temp }}/release.keystore
         run: |
           mkdir -p output
-          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
           APP_NAME="FuckClip"
 
           ARCHS=("arm64-v8a" "armeabi-v7a" "universal" "x86_64")
@@ -212,23 +205,8 @@ jobs:
               exit 1
             fi
 
-            # 若 Gradle 未签名，使用 apksigner 签名
-            if ! "$APKSIGNER" verify "$SRC" 2>/dev/null; then
-              echo "Signing APK with apksigner for $ARCH..."
-              "$APKSIGNER" sign --ks "$KEYSTORE_FILE" \
-                --ks-key-alias "$KEY_ALIAS" \
-                --ks-pass "pass:$KEYSTORE_PASSWORD" \
-                --key-pass "pass:$KEY_PASSWORD" \
-                "$SRC"
-            fi
-
-            echo "Verifying APK signature for $ARCH ($SRC)..."
-            "$APKSIGNER" verify --print-certs "$SRC"
-
             DEST_NAME="${APP_NAME}_${VER_STR}_${VER_CODE}-${ARCH}-release.apk"
-            DEST="output/${DEST_NAME}"
-            cp "$SRC" "$DEST"
-            echo "Prepared asset: $DEST_NAME"
+            python3 tools/sign_release.py --apksigner "$APKSIGNER" "$SRC" "output/$DEST_NAME"
           done
 
           echo "Generated Release APKs:"

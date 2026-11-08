@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="log_archive_title">Archive</string>
+    <string name="log_archive_empty">Records older than the latest 100 appear here.</string>
+    <string name="log_archive_newer">Newer</string>
+    <string name="log_archive_older">Older</string>
+    <string name="log_archive_load_failed">Could not load the archive.</string>
+    <string name="log_archive_retry">Retry</string>
+    <string name="log_clear_including_archive">Delete all recent and archived activity records? This cannot be undone.</string>
+</resources>

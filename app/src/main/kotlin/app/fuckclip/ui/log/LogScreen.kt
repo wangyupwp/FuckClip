@@ -63,6 +63,7 @@ fun LogScreen(
     val dateFormat = rememberDateFormat()
 
     var showClearConfirmDialog by remember { mutableStateOf(false) }
+    var showArchive by remember { mutableStateOf(false) }
     var selectedLogForDetail by remember { mutableStateOf<HookLog?>(null) }
 
     Column(
@@ -88,13 +89,18 @@ fun LogScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (allLogs.isNotEmpty()) {
-                IconButton(onClick = { showClearConfirmDialog = true }) {
-                    Icon(
-                        imageVector = Icons.Default.DeleteSweep,
-                        contentDescription = stringResource(R.string.options_clear_history),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { showArchive = true }) {
+                    Text(stringResource(R.string.log_archive_title))
+                }
+                if (allLogs.isNotEmpty()) {
+                    IconButton(onClick = { showClearConfirmDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteSweep,
+                            contentDescription = stringResource(R.string.options_clear_history),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         }
@@ -189,6 +195,10 @@ fun LogScreen(
         }
     }
 
+    if (showArchive) {
+        LogArchiveDialog(viewModel, dateFormat, onDismiss = { showArchive = false })
+    }
+
     // Detail Dialog for Full Content View
     selectedLogForDetail?.let { log ->
         ClipboardContentDetailDialog(
@@ -203,7 +213,7 @@ fun LogScreen(
         AlertDialog(
             onDismissRequest = { showClearConfirmDialog = false },
             title = { Text(stringResource(R.string.settings_clear_history_confirm)) },
-            text = { Text(stringResource(R.string.settings_clear_history_summary)) },
+            text = { Text(stringResource(R.string.log_clear_including_archive)) },
             confirmButton = {
                 TextButton(
                     onClick = {

@@ -1,10 +1,13 @@
 package app.fuckclip.hook
 
+import android.app.AppOpsManager
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.os.Binder
-import android.os.Looper
+import android.os.Process
+import android.os.SystemClock
+import android.os.UserHandle
 import android.util.Log
 import app.fuckclip.core.ModuleConstants
 import app.fuckclip.core.PrefKeys
@@ -19,21 +22,8 @@ import io.github.libxposed.api.XposedModule
 import org.json.JSONArray
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
-
-/**
- * Range of application UIDs allocated per Android secondary user profile.
- *
- * Android 多用户环境中每个用户分配的 UID 区间跨度。
- */
-private const val PER_USER_RANGE = 100_000
-
-/**
- * Timeout in seconds for synchronous read prompts before defaulting to deny.
- *
- * 同步读取弹窗授权的超时时长（秒），超时后默认拒绝。
- */
-private const val SYNC_READ_TIMEOUT_SECONDS = 12L
 
 /**
  * Maximum number of clipboard characters captured for audit logs and prompt previews.
@@ -41,6 +31,7 @@ private const val SYNC_READ_TIMEOUT_SECONDS = 12L
  * 记录日志与弹窗预览时截取的剪贴板最大字符数。
  */
 private const val MAX_CAPTURED_TEXT_CHARS = 8_192
+private const val SENSITIVE_CLIP_KEY = "android.content.extra.IS_SENSITIVE"
 
 /**
  * Marker appended when clipboard text is cut off at [MAX_CAPTURED_TEXT_CHARS].
@@ -66,22 +57,15 @@ internal class ClipboardHook(
     private val androidHook = AndroidClipboardHook(this)
     private val samsungHook = SamsungClipboardHook(this)
 
-    private val rogueLimiter = RogueAppLimiter()
+    private val rogueLimiter = RogueAppLimiter(SystemClock::elapsedRealtime)
+    private val waitingReads = Semaphore(4)
     private val hookedMethods = HashSet<Method>()
     private val scannedClasses = HashSet<Class<*>>()
-
-    /**
-     * In-memory cache of rules updated via dialog checkbox during this process lifecycle.
-     *
-     * 进程生命周期内通过弹窗复选框更新的临时规则内存缓存。
-     */
-    private val rememberedRules = HashMap<String, Pair<Int, Int>>()
 
     private val promptManager = ClipboardPromptManager(
         hook = this,
         module = module,
-        rogueLimiter = rogueLimiter,
-        rememberedRules = rememberedRules
+        rogueLimiter = rogueLimiter
     )
 
     /**
@@ -103,9 +87,7 @@ internal class ClipboardHook(
         promptManager.reset()
         hookedMethods.clear()
         scannedClasses.clear()
-        rememberedRules.clear()
         SystemContextResolver.reset()
-        ClipboardReader.reset()
         rogueLimiter.reset()
     }
 
@@ -133,11 +115,10 @@ internal class ClipboardHook(
                     params[0] == String::class.java
                 ) {
                     hookMethod(method, isWrite = false)
-                } else if (method.name == "setPrimaryClip" &&
-                    method.returnType == java.lang.Void.TYPE &&
-                    params.size >= 2 &&
-                    params[0] == ClipData::class.java &&
-                    params[1] == String::class.java
+                } else if (method.returnType == java.lang.Void.TYPE &&
+                    ((method.name == "setPrimaryClip" && params.size >= 2 &&
+                        params[0] == ClipData::class.java && params[1] == String::class.java) ||
+                        (method.name == "clearPrimaryClip" && params.firstOrNull() == String::class.java))
                 ) {
                     hookMethod(method, isWrite = true)
                 }
@@ -160,7 +141,7 @@ internal class ClipboardHook(
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
                     if (isWrite) {
-                        handleSetPrimaryClip(chain, method, invoker)
+                        handleClipboardWrite(chain, method, invoker)
                     } else {
                         handleGetPrimaryClip(chain)
                     }
@@ -172,16 +153,14 @@ internal class ClipboardHook(
     }
 
     private fun handleGetPrimaryClip(chain: XposedInterface.Chain): Any? {
+        if (isFrameworkCaller() || !isMasterEnabled()) return chain.proceed()
         val packageName = (chain.getArg(0) as? String)
             ?: getSystemContext()?.packageManager?.getNameForUid(Binder.getCallingUid())
-            ?: return chain.proceed()
-
-        if (isFrameworkCaller(packageName)) {
-            return chain.proceed()
-        }
+            ?: return null
+        if (!isCallerPackage(packageName)) return null
 
         val rule = resolvePackageRule(packageName, isWrite = false)
-        val userId = Binder.getCallingUid() / PER_USER_RANGE
+        val caller = callerKey(packageName)
 
         val prefs = try { module.getRemotePreferences(PrefKeys.PREFS_GROUP) } catch (_: Throwable) { null }
         val rogueThrottleEnabled = prefs?.getBoolean(PrefKeys.KEY_ROGUE_THROTTLE_ENABLED, true) ?: true
@@ -191,7 +170,7 @@ internal class ClipboardHook(
             ?: RogueAppLimiter.DEFAULT_PROMPT_TOLERANCE
 
         val throttleResult = rogueLimiter.evaluateRead(
-            packageName = packageName,
+            packageName = caller,
             isRuleRequest = (rule == WhitelistRule.RULE_REQUEST),
             enabled = rogueThrottleEnabled,
             maxAttempts = maxReadFrequency,
@@ -200,22 +179,20 @@ internal class ClipboardHook(
 
         when (throttleResult) {
             is ReadThrottleResult.Throttled -> {
-                val peekedClip = ClipboardReader.readPrimaryClip(chain.thisObject, userId)
-                    ?: ClipboardReader.readPrimaryClip(chain.thisObject, 0)
-                val text = extractClipText(peekedClip, getSystemContext())
-                notifyHookLog(packageName, "READ", allowed = false, detail = throttleResult.reason, content = text)
+                notifyHookLog(packageName, "READ", allowed = false, detail = throttleResult.reason)
                 return null
             }
             is ReadThrottleResult.FastTrackAllow -> {
-                val original = try {
-                    chain.proceed() as? ClipData
-                } catch (_: SecurityException) {
-                    null
+                val grant = throttleResult.grant
+                val expected = grant.clipIdentity as? ClipData
+                if (expected != null && snapshotForRead(chain) === expected) {
+                    val result = readFromPlatform(chain, packageName, "Allowed by burst window", expected) {
+                        rogueLimiter.isReadGrantCurrent(caller, grant)
+                    }
+                    if (result == null) rogueLimiter.cancelReadGrant(caller, grant)
+                    return result
                 }
-                val clip = original ?: ClipboardReader.readPrimaryClip(chain.thisObject, userId)
-                val text = extractClipText(clip, getSystemContext())
-                notifyHookLog(packageName, "READ", allowed = true, detail = "Allowed by burst window", content = text)
-                return clip
+                rogueLimiter.cancelReadGrant(caller, grant)
             }
             ReadThrottleResult.Proceed -> {
                 // Proceed with normal evaluation
@@ -224,103 +201,156 @@ internal class ClipboardHook(
 
         when (rule) {
             WhitelistRule.RULE_ALLOW -> {
-                val original = try {
-                    chain.proceed() as? ClipData
-                } catch (_: SecurityException) {
-                    null
-                }
-                val clip = original ?: ClipboardReader.readPrimaryClip(chain.thisObject, userId)
-                val text = extractClipText(clip, getSystemContext())
-                notifyHookLog(packageName, "READ", allowed = true, detail = "Allowed by rule", content = text)
-                return clip
+                return readFromPlatform(chain, packageName, "Allowed by rule")
             }
             WhitelistRule.RULE_DENY -> {
-                val peekedClip = ClipboardReader.readPrimaryClip(chain.thisObject, userId)
-                    ?: ClipboardReader.readPrimaryClip(chain.thisObject, 0)
-                val text = extractClipText(peekedClip, getSystemContext())
-                notifyHookLog(packageName, "READ", allowed = false, detail = "Denied by configured rule", content = text)
+                notifyHookLog(packageName, "READ", allowed = false, detail = "Denied by configured rule")
                 return null
             }
             else -> {
-                // RULE_REQUEST: synchronously prompt the user
-                var peekedClip = ClipboardReader.readPrimaryClip(chain.thisObject, userId)
-                if (peekedClip == null && userId != 0) {
-                    peekedClip = ClipboardReader.readPrimaryClip(chain.thisObject, 0)
+                if (!waitingReads.tryAcquire()) {
+                    notifyHookLog(packageName, "READ", allowed = false, detail = "Too many pending read prompts")
+                    return null
                 }
-                val sync = ReadSync()
-                val pending = PendingRequest(
-                    packageName = packageName,
-                    isWrite = false,
-                    clipData = peekedClip,
-                    replay = null,
-                    syncList = mutableListOf(sync),
-                    thisObject = chain.thisObject,
-                    userId = userId
-                )
-
-                rogueLimiter.onPromptStarted(packageName)
-                promptManager.enqueueRequest(pending)
-
-                val answered = try {
-                    sync.latch.await(SYNC_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                } catch (_: InterruptedException) {
-                    false
-                }
-
-                return if (answered && sync.granted.get()) {
-                    val original = try {
-                        chain.proceed() as? ClipData
-                    } catch (_: SecurityException) {
-                        null
-                    }
-                    original ?: peekedClip ?: ClipboardReader.readPrimaryClip(chain.thisObject, userId)
-                } else {
-                    null
+                try {
+                    return awaitReadDecision(chain, packageName)
+                } finally {
+                    waitingReads.release()
                 }
             }
         }
     }
 
-    private fun handleSetPrimaryClip(
+    private fun snapshotForRead(chain: XposedInterface.Chain): ClipData? {
+        val target = ReadClipboardPreview.forRequest(chain.thisObject, chain.args, Binder.getCallingUid())
+            ?: return null
+        val token = Binder.clearCallingIdentity()
+        return try {
+            getSystemContext()?.let(target::snapshot)
+        } finally {
+            Binder.restoreCallingIdentity(token)
+        }
+    }
+
+    private fun awaitReadDecision(chain: XposedInterface.Chain, packageName: String): ClipData? {
+        val sync = ReadSync()
+        val pending = PendingRequest(
+            packageName = packageName,
+            callerKey = callerKey(packageName),
+            isWrite = false,
+            clipData = null,
+            replay = null,
+            readSync = sync,
+            readPreviewClip = snapshotForRead(chain)
+        )
+
+        rogueLimiter.onPromptStarted(pending.callerKey)
+        promptManager.enqueueRequest(pending)
+
+        val answered = try {
+            sync.latch.await(sync.remainingMs(), TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            false
+        }
+
+        if (!answered) {
+            synchronized(sync) {
+                sync.cancel()
+                promptManager.expireRead(pending)
+            }
+            return null
+        }
+        if (!sync.granted.get()) return null
+        val approval = sync.approval ?: return null
+        try {
+            val expected = sync.previewedClip
+            if (expected != null && snapshotForRead(chain) !== expected) {
+                notifyHookLog(packageName, "READ", allowed = false, detail = "Clipboard changed after preview")
+                return null
+            }
+            val clip = readFromPlatform(chain, packageName, "Allowed by user dialog", expected) {
+                rogueLimiter.isReadGrantCurrent(pending.callerKey, approval)
+            } ?: return null
+            if (sync.rememberApproval && rogueLimiter.isReadGrantCurrent(pending.callerKey, approval)) {
+                broadcastRuleUpdate(packageName, isWrite = false, WhitelistRule.RULE_ALLOW)
+            } else if (!sync.rememberApproval && expected != null) {
+                val duration = readSettingMs(PrefKeys.KEY_GRANT_BURST_SECONDS, RogueAppLimiter.DEFAULT_GRANT_BURST_MS)
+                rogueLimiter.completeReadGrant(pending.callerKey, approval, clip, duration)
+            }
+            return clip
+        } finally {
+            rogueLimiter.cancelReadGrant(pending.callerKey, approval)
+        }
+    }
+
+    private fun readFromPlatform(
+        chain: XposedInterface.Chain,
+        packageName: String,
+        detail: String,
+        previewedClip: ClipData? = null,
+        isAuthorized: () -> Boolean = { true }
+    ): ClipData? {
+        if (!isAuthorized()) return null
+        val captureContent = callerMayShareContent()
+        val clip = chain.proceed() as? ClipData
+        if (!isAuthorized()) return null
+        if (previewedClip != null && clip != null && clip !== previewedClip) {
+            notifyHookLog(packageName, "READ", allowed = false, detail = "Clipboard changed after preview")
+            return null
+        }
+        notifyHookLog(
+            packageName, "READ", allowed = clip != null,
+            detail = if (clip == null) "Android returned no clipboard data" else detail,
+            content = extractClipText(clip, captureContent)
+        )
+        return clip
+    }
+
+    private fun handleClipboardWrite(
         chain: XposedInterface.Chain,
         method: Method,
         invoker: XposedInterface.Invoker<*, Method>
     ): Any? {
-        val packageName = (chain.getArg(1) as? String)
+        if (isFrameworkCaller() || !isMasterEnabled()) return chain.proceed()
+        val isClear = method.name == "clearPrimaryClip"
+        val packageName = (chain.getArg(if (isClear) 0 else 1) as? String)
             ?: getSystemContext()?.packageManager?.getNameForUid(Binder.getCallingUid())
-        val clipData = chain.getArg(0) as? ClipData
+            ?: return null
+        val clipData = if (isClear) null else chain.getArg(0) as? ClipData
 
-        if (packageName == null || isFrameworkCaller(packageName)) {
-            return chain.proceed()
-        }
+        if (!isCallerPackage(packageName)) return null
 
         val rule = resolvePackageRule(packageName, isWrite = true)
+        val captureContent = callerMayShareContent()
 
         when (rule) {
             WhitelistRule.RULE_ALLOW -> {
                 val result = chain.proceed()
-                val text = extractClipText(clipData, getSystemContext())
-                notifyHookLog(packageName, "WRITE", allowed = true, detail = "Allowed by rule", content = text)
+                val text = extractClipText(clipData, captureContent)
+                val detail = if (isClear) "Clipboard clear allowed by rule" else "Allowed by rule"
+                notifyHookLog(packageName, "WRITE", allowed = true, detail = detail, content = text)
                 return result
             }
             WhitelistRule.RULE_DENY -> {
-                val text = extractClipText(clipData, getSystemContext())
-                notifyHookLog(packageName, "WRITE", allowed = false, detail = "Denied by rule", content = text)
+                val text = extractClipText(clipData, captureContent)
+                val detail = if (isClear) "Clipboard clear denied by rule" else "Denied by rule"
+                notifyHookLog(packageName, "WRITE", allowed = false, detail = detail, content = text)
                 return null
             }
             else -> {
                 // RULE_REQUEST: suspend call and prompt asynchronously
-                val callerUserId = Binder.getCallingUid() / PER_USER_RANGE
+                val callerKey = callerKey(packageName)
                 val callingToken = Binder.clearCallingIdentity()
                 try {
                     val replay = Replay(method, invoker, chain.thisObject, chain.args.toTypedArray<Any?>(), callingToken)
                     val pending = PendingRequest(
                         packageName = packageName,
+                        callerKey = callerKey,
                         isWrite = true,
                         clipData = clipData,
                         replay = replay,
-                        thisObject = chain.thisObject,
-                        userId = callerUserId
+                        captureContent = captureContent,
+                        isClear = isClear
                     )
                     promptManager.enqueueRequest(pending)
                     return null
@@ -331,29 +361,42 @@ internal class ClipboardHook(
         }
     }
 
-    private fun isFrameworkCaller(packageName: String): Boolean {
-        val callingPid = Binder.getCallingPid()
-        val callingUid = Binder.getCallingUid()
-        return packageName == "android" ||
-            callingUid == android.os.Process.SYSTEM_UID ||
-            callingPid == android.os.Process.myPid() ||
-            Looper.myLooper() == Looper.getMainLooper()
+    private fun isFrameworkCaller(): Boolean =
+        Binder.getCallingUid() == android.os.Process.SYSTEM_UID ||
+            Binder.getCallingPid() == android.os.Process.myPid()
+
+    private fun callerKey(packageName: String): String = "${Binder.getCallingUid()}:$packageName"
+
+    internal fun readSettingMs(key: String, defaultMs: Long): Long = try {
+        module.getRemotePreferences(PrefKeys.PREFS_GROUP)
+            .getInt(key, (defaultMs / 1000).toInt()).coerceAtLeast(0) * 1000L
+    } catch (_: Exception) {
+        defaultMs
+    }
+
+    // Audit broadcasts go to the manager in the system process's user.
+    private fun callerMayShareContent(): Boolean =
+        UserHandle.getUserHandleForUid(Binder.getCallingUid()) == Process.myUserHandle()
+
+    private fun isCallerPackage(packageName: String): Boolean {
+        val appOps = getSystemContext()?.getSystemService(AppOpsManager::class.java) ?: return false
+        return try {
+            appOps.checkPackage(Binder.getCallingUid(), packageName)
+            true
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
+    private fun isMasterEnabled(): Boolean = try {
+        module.getRemotePreferences(PrefKeys.PREFS_GROUP).getBoolean(PrefKeys.KEY_MASTER_ENABLED, true)
+    } catch (_: Exception) {
+        true
     }
 
     private fun resolvePackageRule(packageName: String, isWrite: Boolean): Int {
         try {
             val prefs = module.getRemotePreferences(PrefKeys.PREFS_GROUP)
-            val masterEnabled = prefs.getBoolean(PrefKeys.KEY_MASTER_ENABLED, true)
-            if (!masterEnabled) {
-                return WhitelistRule.RULE_ALLOW
-            }
-
-            synchronized(rememberedRules) {
-                rememberedRules[packageName]?.let {
-                    return if (isWrite) it.second else it.first
-                }
-            }
-
             val rawWhitelist = prefs.getString(PrefKeys.KEY_WHITELIST, null)
             if (!rawWhitelist.isNullOrBlank()) {
                 val array = JSONArray(rawWhitelist)
@@ -377,14 +420,14 @@ internal class ClipboardHook(
      *
      * 向管理器应用广播发送指定 [packageName] 更新后的权限规则。
      */
-    internal fun broadcastRuleUpdate(packageName: String, readRule: Int, writeRule: Int) {
+    internal fun broadcastRuleUpdate(packageName: String, isWrite: Boolean, rule: Int) {
         try {
             val context = getSystemContext() ?: return
             val intent = Intent(ModuleConstants.ACTION_UPDATE_RULE).apply {
-                setPackage(ModuleConstants.APPLICATION_ID)
+                setClassName(ModuleConstants.APPLICATION_ID, ModuleConstants.HOOK_RECEIVER_CLASS)
                 putExtra("pkg", packageName)
-                putExtra("readRule", readRule)
-                putExtra("writeRule", writeRule)
+                putExtra("isWrite", isWrite)
+                putExtra("rule", rule)
             }
             val token = Binder.clearCallingIdentity()
             try {
@@ -398,26 +441,23 @@ internal class ClipboardHook(
     }
 
     /**
-     * Extracts plain text representation from [clipData] using [context], capping the length at [MAX_CAPTURED_TEXT_CHARS].
+     * Extracts a bounded preview without opening app-supplied content URIs.
      *
-     * 使用 [context] 从 [clipData] 中解析提取纯文本内容，长度限制在 [MAX_CAPTURED_TEXT_CHARS] 以内。
+     * 提取有限长度的预览，不打开应用提供的内容 URI。
      */
-    internal fun extractClipText(clipData: ClipData?, context: Context?): String? {
-        if (clipData == null || clipData.itemCount <= 0) return null
+    internal fun extractClipText(clipData: ClipData?, captureContent: Boolean, textOnly: Boolean = false): String? {
+        if (!captureContent || clipData == null) return null
+        val sensitive = try {
+            clipData.description.extras?.getBoolean(SENSITIVE_CLIP_KEY) == true
+        } catch (_: RuntimeException) {
+            true
+        }
+        if (sensitive) return null
         val sb = StringBuilder()
         for (i in 0 until clipData.itemCount) {
             val item = clipData.getItemAt(i) ?: continue
             val text = item.text?.toString()
-                ?: if (context != null) {
-                    try {
-                        item.coerceToText(context)?.toString()
-                    } catch (_: Throwable) {
-                        null
-                    }
-                } else null
-                ?: item.htmlText
-                ?: item.uri?.toString()
-                ?: item.intent?.toUri(0)
+                ?: if (textOnly) null else item.htmlText ?: item.uri?.toString() ?: item.intent?.toUri(0)
             if (!text.isNullOrEmpty()) {
                 if (sb.isNotEmpty()) sb.append("\n")
                 val remaining = MAX_CAPTURED_TEXT_CHARS - sb.length
@@ -457,12 +497,13 @@ internal class ClipboardHook(
         try {
             val context = getSystemContext() ?: return
             val intent = Intent(ModuleConstants.ACTION_HOOK_LOG).apply {
-                setPackage(ModuleConstants.APPLICATION_ID)
+                setClassName(ModuleConstants.APPLICATION_ID, ModuleConstants.HOOK_RECEIVER_CLASS)
                 putExtra("pkg", packageName)
                 putExtra("action", action)
                 putExtra("allowed", allowed)
                 putExtra("source", finalDetail)
                 putExtra("timestamp", System.currentTimeMillis())
+                putExtra(ModuleConstants.EXTRA_AUDIT_CONTENT_FILTERED, true)
                 putExtra("content", content)
                 putExtra("count", suppressedCount + 1)
             }

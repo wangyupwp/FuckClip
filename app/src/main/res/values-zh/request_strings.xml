@@ -20,6 +20,7 @@
     <string name="request_write_preview_title">即将写入的内容</string>
     <string name="request_read_preview_title">当前剪贴板内容</string>
     <string name="request_write_notice">该应用正在尝试修改您的系统剪贴板内容。</string>
+    <string name="request_clear_notice">该应用正在请求清空您的剪贴板。</string>
     <string name="request_read_notice">该应用正在申请读取当前剪贴板内容，请注意保护隐私安全。</string>
     <string name="request_remember_hint">后续将自动套用此规则，可在规则列表中更改</string>
     <string name="request_content_empty">(空内容)</string>

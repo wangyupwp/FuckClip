@@ -54,6 +54,7 @@ internal class WhitelistStore(
      *
      * 与远程偏好配置同步白名单状态。
      */
+    @Synchronized
     fun sync(remotePrefs: SharedPreferences) {
         val remoteWhitelist = remotePrefs.getString(PrefKeys.KEY_WHITELIST, null)
         if (!remoteWhitelist.isNullOrBlank()) {
@@ -73,6 +74,7 @@ internal class WhitelistStore(
      *
      * 更新或创建指定 [packageName] 的权限规则，重置为默认值时直接移除存储条目。
      */
+    @Synchronized
     fun setPackageRule(packageName: String, readRule: Int, writeRule: Int) {
         if (isDefaultRule(readRule, writeRule)) {
             removePackageRule(packageName)
@@ -90,6 +92,16 @@ internal class WhitelistStore(
         saveWhitelist(current)
     }
 
+    @Synchronized
+    fun setOperationRule(packageName: String, isWrite: Boolean, rule: Int) {
+        val current = getPackageRule(packageName)
+        if (isWrite) {
+            setPackageRule(packageName, current.readRule, rule)
+        } else {
+            setPackageRule(packageName, rule, current.writeRule)
+        }
+    }
+
     /**
      * Retrieves the permission rule configured for the specified [packageName].
      *
@@ -105,6 +117,7 @@ internal class WhitelistStore(
      *
      * 移除 [packageName] 的已配置规则，将其重置为默认询问状态。
      */
+    @Synchronized
     fun removePackageRule(packageName: String) {
         val current = _whitelist.value.toMutableList()
         val index = current.indexOfFirst { it.packageName == packageName }
@@ -120,6 +133,7 @@ internal class WhitelistStore(
      *
      * 切换指定 [packageName] 的读取放行权限。
      */
+    @Synchronized
     fun togglePackage(packageName: String) {
         val current = _whitelist.value.toMutableList()
         val index = current.indexOfFirst { it.packageName == packageName }
@@ -164,6 +178,7 @@ internal class WhitelistStore(
      *
      * 从指定的 [jsonString] 导入白名单规则，并返回成功导入的规则数量。
      */
+    @Synchronized
     fun importWhitelist(jsonString: String): Result<Int> {
         return runCatching {
             require(jsonString.length <= MAX_BACKUP_CHARS) {

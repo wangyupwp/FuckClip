@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_log_keepalive_title">保持記錄運作</string>
+    <string name="settings_log_keepalive_summary">顯示常駐通知，以便在背景繼續接收稽核記錄。</string>
+    <string name="log_keepalive_notification_title">已啟用背景記錄</string>
+    <string name="log_keepalive_notification_body">正在背景接收剪貼簿稽核記錄。</string>
+    <string name="log_keepalive_stop">停止背景記錄</string>
+    <string name="log_keepalive_notifications_required">請允許 FuckClip 和背景記錄通知管道傳送通知，再重新開啟此開關。</string>
+    <string name="log_keepalive_open_notification_settings">開啟通知設定</string>
+    <string name="log_keepalive_start_failed">無法啟動背景記錄，請在應用程式開啟時重試。</string>
+</resources>

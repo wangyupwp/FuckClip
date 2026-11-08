@@ -233,6 +233,8 @@ fun SettingsScreen(
                     onClick = { importLauncher.launch(arrayOf("application/json", "*/*")) }
                 )
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                LogKeepAliveSetting()
+                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                 SettingsActionRow(
                     icon = Icons.Default.DeleteSweep,
                     title = stringResource(R.string.options_clear_history),
@@ -300,7 +302,7 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showClearHistoryDialog = false },
             title = { Text(stringResource(R.string.options_clear_history)) },
-            text = { Text(stringResource(R.string.settings_clear_history_confirm)) },
+            text = { Text(stringResource(R.string.log_clear_including_archive)) },
             confirmButton = {
                 TextButton(
                     onClick = {

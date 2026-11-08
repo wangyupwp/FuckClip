@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="log_archive_title">归档</string>
+    <string name="log_archive_empty">超过最近 100 条的使用记录会显示在这里。</string>
+    <string name="log_archive_newer">较新记录</string>
+    <string name="log_archive_older">较早记录</string>
+    <string name="log_archive_load_failed">无法加载归档。</string>
+    <string name="log_archive_retry">重试</string>
+    <string name="log_clear_including_archive">清空最近记录及所有归档？此操作不可撤销。</string>
+</resources>

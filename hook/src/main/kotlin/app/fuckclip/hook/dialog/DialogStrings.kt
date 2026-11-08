@@ -33,6 +33,7 @@ internal data class DialogStrings(
      * 剪贴板写入操作的提示说明文案。
      */
     val promptNoticeWrite: String,
+    val promptNoticeClear: String,
 
     /**
      * Prompt explanation message for clipboard read operations.
@@ -114,6 +115,7 @@ internal data class DialogStrings(
             badgeWrite = "写入剪贴板",
             badgeRead = "读取剪贴板",
             promptNoticeWrite = "该应用正在尝试修改您的系统剪贴板内容。",
+            promptNoticeClear = "该应用正在请求清空您的剪贴板。",
             promptNoticeRead = "该应用正在申请读取当前剪贴板内容，请注意保护隐私安全。",
             previewHeaderWrite = "即将写入的内容",
             previewHeaderRead = "当前剪贴板内容",
@@ -135,6 +137,7 @@ internal data class DialogStrings(
             badgeWrite = "寫入剪貼簿",
             badgeRead = "讀取剪貼簿",
             promptNoticeWrite = "該應用程式正在嘗試修改您的系統剪貼簿內容。",
+            promptNoticeClear = "該應用程式正在要求清空您的剪貼簿。",
             promptNoticeRead = "該應用程式正在申請讀取目前剪貼簿內容，請注意保護隱私安全。",
             previewHeaderWrite = "即將寫入的內容",
             previewHeaderRead = "目前剪貼簿內容",
@@ -156,6 +159,7 @@ internal data class DialogStrings(
             badgeWrite = "Write Clipboard",
             badgeRead = "Read Clipboard",
             promptNoticeWrite = "This application is attempting to modify your clipboard content.",
+            promptNoticeClear = "This application is requesting to clear your clipboard.",
             promptNoticeRead = "This application is requesting to read your clipboard content.",
             previewHeaderWrite = "Content to Write",
             previewHeaderRead = "Current Clipboard Content",
@@ -209,6 +213,7 @@ internal data class DialogStrings(
                 badgeWrite = resStr("request_badge_write", base.badgeWrite),
                 badgeRead = resStr("request_badge_read", base.badgeRead),
                 promptNoticeWrite = resStr("request_write_notice", base.promptNoticeWrite),
+                promptNoticeClear = resStr("request_clear_notice", base.promptNoticeClear),
                 promptNoticeRead = resStr("request_read_notice", base.promptNoticeRead),
                 previewHeaderWrite = resStr("request_write_preview_title", base.previewHeaderWrite),
                 previewHeaderRead = resStr("request_read_preview_title", base.previewHeaderRead),

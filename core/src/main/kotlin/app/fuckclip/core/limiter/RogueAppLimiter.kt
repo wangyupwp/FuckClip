@@ -30,8 +30,11 @@ sealed class ReadThrottleResult {
      *
      * 读取操作因处于用户单次允许的有效时间窗口内而被直接放行，无需重复弹窗。
      */
-    object FastTrackAllow : ReadThrottleResult()
+    data class FastTrackAllow(val grant: ReadGrant) : ReadThrottleResult()
 }
+
+/** An approval is pending until Android returns the approved clipboard instance. */
+class ReadGrant internal constructor(val clipIdentity: Any? = null)
 
 /**
  * High-performance rate limiter and anti-spam controller protecting system resources against rogue applications.
@@ -46,11 +49,8 @@ class RogueAppLimiter(
      */
     private val timeProvider: () -> Long = { System.currentTimeMillis() }
 ) {
-    /** Expiration timestamp in milliseconds for deny cooldown per package. */
-    private val denyCooldownUntil = ConcurrentHashMap<String, Long>()
-
-    /** Expiration timestamp in milliseconds for temporary grant burst per package. */
-    private val grantWindowUntil = ConcurrentHashMap<String, Long>()
+    private data class ReadWindow(val expiresAt: Long, val grant: ReadGrant? = null)
+    private val readWindows = ConcurrentHashMap<String, ReadWindow>()
 
     /** Expiration timestamp in milliseconds for high-frequency penalty per package. */
     private val rateLimitPenaltyUntil = ConcurrentHashMap<String, Long>()
@@ -85,7 +85,7 @@ class RogueAppLimiter(
      * 当前仍保留限流簿记的应用数量，用于诊断与测试。
      */
     val trackedPackageCount: Int
-        get() = (denyCooldownUntil.keys + grantWindowUntil.keys + rateLimitPenaltyUntil.keys +
+        get() = (readWindows.keys + rateLimitPenaltyUntil.keys +
             readAttemptTimestamps.keys + lastLogEmitTimes.keys + suppressedLogCounts.keys +
             activePromptCounts.keys).size
 
@@ -96,8 +96,7 @@ class RogueAppLimiter(
      */
     fun pruneStaleState(now: Long = timeProvider()) {
         val staleBefore = now - STALE_STATE_TTL_MS
-        denyCooldownUntil.entries.removeIf { it.value <= now }
-        grantWindowUntil.entries.removeIf { it.value <= now }
+        readWindows.entries.removeIf { it.value.expiresAt <= now }
         rateLimitPenaltyUntil.entries.removeIf { it.value <= now }
         readAttemptTimestamps.entries.removeIf { entry ->
             val attempts = entry.value
@@ -169,16 +168,10 @@ class RogueAppLimiter(
         }
 
         if (isRuleRequest) {
-            // 3. Temporary grant window check (user recently allowed without remembering)
-            val grantEnd = grantWindowUntil[packageName] ?: 0L
-            if (now < grantEnd) {
-                return ReadThrottleResult.FastTrackAllow
-            }
-
-            // 4. Deny cooldown check (user recently denied / dismissed / timed out)
-            val denyEnd = denyCooldownUntil[packageName] ?: 0L
-            if (now < denyEnd) {
-                return ReadThrottleResult.Throttled("Denied by cooldown (anti-spam)")
+            val window = readWindows[packageName]
+            if (window != null && now < window.expiresAt) {
+                val grant = window.grant ?: return ReadThrottleResult.Throttled("Denied by cooldown (anti-spam)")
+                if (grant.clipIdentity != null) return ReadThrottleResult.FastTrackAllow(grant)
             }
 
             // 5. Concurrency check: tolerate a short burst of reads before silently throttling
@@ -247,21 +240,30 @@ class RogueAppLimiter(
      * @param cooldownMs Cooldown duration in milliseconds.
      */
     fun setDenyCooldown(packageName: String, cooldownMs: Long) {
-        val now = timeProvider()
-        denyCooldownUntil[packageName] = now + cooldownMs
+        readWindows[packageName] = ReadWindow(timeProvider() + cooldownMs.coerceAtLeast(0))
     }
 
-    /**
-     * Registers a temporary grant burst window following a one-time user authorization.
-     *
-     * 记录用户单次允许后的临时有效快速放行窗口。
-     *
-     * @param packageName Target package name.
-     * @param grantWindowMs Grant burst duration in milliseconds.
-     */
-    fun setGrantBurstWindow(packageName: String, grantWindowMs: Long) {
-        val now = timeProvider()
-        grantWindowUntil[packageName] = now + grantWindowMs
+    fun beginReadGrant(packageName: String, pendingTimeoutMs: Long): ReadGrant {
+        val grant = ReadGrant()
+        readWindows[packageName] = ReadWindow(timeProvider() + pendingTimeoutMs, grant)
+        return grant
+    }
+
+    fun completeReadGrant(packageName: String, pending: ReadGrant, clipIdentity: Any, durationMs: Long) {
+        readWindows.computeIfPresent(packageName) { _, current ->
+            val now = timeProvider()
+            if (current.grant !== pending || now >= current.expiresAt) current
+            else ReadWindow(now + durationMs.coerceAtLeast(0), ReadGrant(clipIdentity))
+        }
+    }
+
+    fun isReadGrantCurrent(packageName: String, grant: ReadGrant): Boolean =
+        readWindows[packageName]?.let { it.grant === grant && timeProvider() < it.expiresAt } == true
+
+    fun cancelReadGrant(packageName: String, grant: ReadGrant) {
+        readWindows.computeIfPresent(packageName) { _, current ->
+            if (current.grant === grant) null else current
+        }
     }
 
     /**
@@ -291,8 +293,7 @@ class RogueAppLimiter(
      * 清空所有已缓存的冷却、突发窗口与尝试记录。
      */
     fun reset() {
-        denyCooldownUntil.clear()
-        grantWindowUntil.clear()
+        readWindows.clear()
         rateLimitPenaltyUntil.clear()
         activePromptCounts.clear()
         readAttemptTimestamps.clear()

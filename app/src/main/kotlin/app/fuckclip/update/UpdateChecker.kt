@@ -34,10 +34,6 @@ object UpdateChecker {
      */
     @Throws(Exception::class)
     fun fetchLatest(abis: List<String> = getDeviceAbis()): UpdateInfo {
-        return tryFetch(abis, useToken = BuildConfig.GITHUB_UPDATE_TOKEN.isNotBlank())
-    }
-
-    private fun tryFetch(abis: List<String>, useToken: Boolean): UpdateInfo {
         val connection = URL(LATEST_RELEASE_API).openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "GET"
@@ -45,15 +41,7 @@ object UpdateChecker {
             connection.readTimeout = 8000
             connection.setRequestProperty("User-Agent", "FuckClip-App/${BuildConfig.VERSION_NAME}")
             connection.setRequestProperty("Accept", "application/vnd.github+json")
-            if (useToken && BuildConfig.GITHUB_UPDATE_TOKEN.isNotBlank()) {
-                connection.setRequestProperty("Authorization", "Bearer ${BuildConfig.GITHUB_UPDATE_TOKEN}")
-            }
-
             val code = connection.responseCode
-            if (code == HttpURLConnection.HTTP_UNAUTHORIZED && useToken) {
-                // If the token is revoked or expired, fall back to anonymous request
-                return tryFetch(abis, useToken = false)
-            }
             if (code != HttpURLConnection.HTTP_OK) {
                 throw IOException("HTTP response code: $code")
             }

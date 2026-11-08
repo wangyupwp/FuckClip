@@ -23,6 +23,7 @@
     <string name="request_write_preview_title">Content to Write</string>
     <string name="request_read_preview_title">Current Clipboard Content</string>
     <string name="request_write_notice">This application is attempting to modify your clipboard content.</string>
+    <string name="request_clear_notice">This application is requesting to clear your clipboard.</string>
     <string name="request_read_notice">This application is requesting to read your clipboard content.</string>
     <string name="request_remember_hint">Apply to future requests automatically</string>
     <string name="request_content_empty">(Empty)</string>

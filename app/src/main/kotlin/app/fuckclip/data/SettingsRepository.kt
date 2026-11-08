@@ -34,7 +34,9 @@ class SettingsRepository(
         encodeDefaults = true
     }
 
+    @Volatile
     private var xposedService: XposedService? = null
+    private val pendingHookRules = LinkedHashMap<Pair<String, Boolean>, Int>()
 
     private val _isActivated = MutableStateFlow(false)
 
@@ -129,7 +131,7 @@ class SettingsRepository(
     // Sub-domain stores
     private val whitelistStore = WhitelistStore(::getActivePreferences, json)
     private val themeStore = ThemeSettingsStore(::getActivePreferences)
-    private val hookLogStore = HookLogStore()
+    private val hookLogStore = HookLogStore(context, json)
     private val updateStore = UpdateSettingsStore(::getActivePreferences)
 
     // Delegated observable streams
@@ -228,19 +230,22 @@ class SettingsRepository(
         try {
             XposedServiceHelper.registerListener(object : XposedServiceHelper.OnServiceListener {
                 override fun onServiceBind(service: XposedService) {
-                    xposedService = service
+                    synchronized(this@SettingsRepository) {
+                        xposedService = service
+                        syncPreferences(service)
+                    }
                     _isActivated.value = true
                     try {
                         _frameworkName.value = service.frameworkName
                         _frameworkVersion.value = service.frameworkVersion
                     } catch (_: Throwable) {}
-
-                    // Sync remote preferences state
-                    syncPreferences(service)
                 }
 
                 override fun onServiceDied(service: XposedService) {
-                    xposedService = null
+                    synchronized(this@SettingsRepository) {
+                        if (xposedService !== service) return
+                        xposedService = null
+                    }
                     _isActivated.value = false
                     _frameworkName.value = null
                     _frameworkVersion.value = null
@@ -266,6 +271,11 @@ class SettingsRepository(
             )
 
             whitelistStore.sync(remotePrefs)
+            for ((target, rule) in pendingHookRules) {
+                val (packageName, isWrite) = target
+                whitelistStore.setOperationRule(packageName, isWrite, rule)
+            }
+            pendingHookRules.clear()
             themeStore.sync(remotePrefs)
             updateStore.sync(remotePrefs)
         } catch (_: Throwable) {}
@@ -300,6 +310,16 @@ class SettingsRepository(
      */
     fun setPackageRule(packageName: String, readRule: Int, writeRule: Int) =
         whitelistStore.setPackageRule(packageName, readRule, writeRule)
+
+    @Synchronized
+    internal fun applyHookRule(packageName: String, isWrite: Boolean, rule: Int) {
+        // A broadcast can start the app before LibXposed connects its remote preferences.
+        if (xposedService == null && overridePrefs == null) {
+            pendingHookRules[packageName to isWrite] = rule
+        } else {
+            whitelistStore.setOperationRule(packageName, isWrite, rule)
+        }
+    }
 
     /**
      * Retrieves the permission rule configured for the specified [packageName].
@@ -358,6 +378,8 @@ class SettingsRepository(
      */
     fun recordHookLog(log: HookLog) =
         hookLogStore.recordHookLog(log)
+
+    internal suspend fun readArchivedLogs(before: Long?) = hookLogStore.readArchive(before)
 
     /**
      * Clears all recorded hook interception logs.

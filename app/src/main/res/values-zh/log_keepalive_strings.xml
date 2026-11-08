@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_log_keepalive_title">日志保活</string>
+    <string name="settings_log_keepalive_summary">显示常驻通知，以便在后台继续接收审计日志。</string>
+    <string name="log_keepalive_notification_title">日志保活已开启</string>
+    <string name="log_keepalive_notification_body">正在后台接收剪贴板审计日志。</string>
+    <string name="log_keepalive_stop">停止日志保活</string>
+    <string name="log_keepalive_notifications_required">请允许 FuckClip 和日志保活频道发送通知，再重新打开此开关。</string>
+    <string name="log_keepalive_open_notification_settings">打开通知设置</string>
+    <string name="log_keepalive_start_failed">无法启动日志保活，请在应用打开时重试。</string>
+</resources>

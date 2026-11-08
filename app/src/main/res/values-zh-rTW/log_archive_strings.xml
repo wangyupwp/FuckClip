@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="log_archive_title">封存</string>
+    <string name="log_archive_empty">超過最近 100 筆的使用記錄會顯示在這裡。</string>
+    <string name="log_archive_newer">較新記錄</string>
+    <string name="log_archive_older">較早記錄</string>
+    <string name="log_archive_load_failed">無法載入封存記錄。</string>
+    <string name="log_archive_retry">重試</string>
+    <string name="log_clear_including_archive">清除最近記錄及所有封存？這項操作無法復原。</string>
+</resources>

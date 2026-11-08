@@ -26,9 +26,9 @@ class HookLogReceiver : BroadcastReceiver(), KoinComponent {
         when (intent.action) {
             ACTION_UPDATE_RULE -> {
                 val pkg = intent.getStringExtra("pkg") ?: return
-                val readRule = intent.getIntExtra("readRule", WhitelistRule.RULE_REQUEST)
-                val writeRule = intent.getIntExtra("writeRule", WhitelistRule.RULE_REQUEST)
-                repository.setPackageRule(pkg, readRule, writeRule)
+                val rule = intent.getIntExtra("rule", WhitelistRule.RULE_REQUEST)
+                if (rule != WhitelistRule.RULE_ALLOW && rule != WhitelistRule.RULE_DENY) return
+                repository.applyHookRule(pkg, intent.getBooleanExtra("isWrite", false), rule)
             }
             ACTION_HOOK_LOG -> {
                 val pkg = intent.getStringExtra("pkg") ?: return
@@ -36,7 +36,12 @@ class HookLogReceiver : BroadcastReceiver(), KoinComponent {
                 val allowed = intent.getBooleanExtra("allowed", true)
                 val source = intent.getStringExtra("source") ?: ""
                 val timestamp = intent.getLongExtra("timestamp", System.currentTimeMillis())
-                val content = intent.getStringExtra("content")
+                // An older Hook may still be loaded until the system framework restarts.
+                val content = if (intent.getBooleanExtra(ModuleConstants.EXTRA_AUDIT_CONTENT_FILTERED, false)) {
+                    intent.getStringExtra("content")
+                } else {
+                    null
+                }
                 val count = intent.getIntExtra("count", 1)
 
                 val appName = try {
@@ -58,7 +63,9 @@ class HookLogReceiver : BroadcastReceiver(), KoinComponent {
                     appName = appName,
                     count = count.coerceAtLeast(1)
                 )
-                repository.recordHookLog(log)
+                val settings = repository
+                val pending = goAsync()
+                settings.recordHookLog(log).invokeOnCompletion { pending.finish() }
             }
         }
     }

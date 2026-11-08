@@ -165,4 +165,6 @@ class LogViewModel(
     fun clearLogs() {
         repository.clearHookLogs()
     }
+
+    internal suspend fun readArchive(before: Long?) = repository.readArchivedLogs(before)
 }

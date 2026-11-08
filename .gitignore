@@ -75,8 +75,8 @@ captures/
 # Signing Keys & Credentials
 # ====================================================================
 *.keystore
+/.deploy-keys/
 *.jks
-!keystore/release.jks
 
 # ====================================================================
 # OS-specific Files

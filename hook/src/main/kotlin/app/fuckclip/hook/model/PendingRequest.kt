@@ -2,7 +2,9 @@ package app.fuckclip.hook.model
 
 import android.content.ClipData
 import android.os.Binder
+import android.os.SystemClock
 import android.util.Log
+import app.fuckclip.core.limiter.ReadGrant
 import io.github.libxposed.api.XposedInterface
 import java.lang.reflect.Method
 import java.util.concurrent.CountDownLatch
@@ -14,6 +16,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 用于挂起阻塞型读取请求的同步闭锁与授权标识。
  */
 internal class ReadSync {
+    private val deadlineMs = SystemClock.elapsedRealtime() + 12_000L
+    private val cancelled = AtomicBoolean(false)
+
+    fun remainingMs(): Long =
+        if (cancelled.get()) 0 else (deadlineMs - SystemClock.elapsedRealtime()).coerceAtLeast(0)
+
+    fun cancel() {
+        cancelled.set(true)
+    }
+
     /**
      * Latch awaiting user decision on the prompt dialog.
      *
@@ -27,6 +39,11 @@ internal class ReadSync {
      * 剪贴板访问是否获得用户授权。
      */
     val granted = AtomicBoolean(false)
+
+    // Published to the waiting Binder thread through latch.countDown().
+    var previewedClip: ClipData? = null
+    var approval: ReadGrant? = null
+    var rememberApproval = false
 }
 
 /**
@@ -100,6 +117,7 @@ internal class PendingRequest(
      * 发起剪贴板访问请求的应用包名。
      */
     val packageName: String,
+    val callerKey: String,
 
     /**
      * Whether this request is a write operation (true for setPrimaryClip, false for getPrimaryClip).
@@ -122,24 +140,8 @@ internal class PendingRequest(
      */
     val replay: Replay?,
 
-    /**
-     * Synchronization latches awaiting user response for concurrent read requests.
-     *
-     * 针对并发读取请求等待用户响应的同步闭锁列表。
-     */
-    val syncList: MutableList<ReadSync> = ArrayList(),
-
-    /**
-     * Target clipboard service instance handling the IPC request.
-     *
-     * 处理该 IPC 请求的目标剪贴板服务实例。
-     */
-    val thisObject: Any?,
-
-    /**
-     * Android user id owning this clipboard interaction, captured from the caller identity.
-     *
-     * 本次剪贴板交互所属的 Android 用户 ID，取自调用方身份标识。
-     */
-    val userId: Int = 0
+    val readSync: ReadSync? = null,
+    val readPreviewClip: ClipData? = null,
+    val captureContent: Boolean = false,
+    val isClear: Boolean = false
 )

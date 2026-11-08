@@ -9,7 +9,7 @@ android {
     namespace = "app.fuckclip"
     compileSdk = 35
 
-    val defaultVersionName = (project.findProperty("appVersionName") as? String) ?: "1.0.0"
+    val defaultVersionName = (project.findProperty("appVersionName") as? String) ?: "1.0.6"
     val defaultVersionCode = run {
         val clean = defaultVersionName.trim().removePrefix("v").removePrefix("V")
         val parts = clean.split(".").mapNotNull { it.takeWhile { c -> c.isDigit() }.toIntOrNull() }
@@ -19,10 +19,6 @@ android {
         major * 10000 + minor * 100 + patch
     }
 
-    val updateCheckToken = (System.getenv("UPDATE_CHECK_TOKEN")
-        ?: project.findProperty("updateCheckToken") as? String
-        ?: "").trim()
-
     defaultConfig {
         applicationId = "io.github.cail_gainey.fuckclip"
         minSdk = 29
@@ -30,38 +26,13 @@ android {
         versionCode = (project.findProperty("appVersionCode") as? String)?.toIntOrNull() ?: defaultVersionCode
         versionName = defaultVersionName
 
-        buildConfigField("String", "GITHUB_UPDATE_TOKEN", "\"$updateCheckToken\"")
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-
-    signingConfigs {
-        create("release") {
-            val envKeystore = System.getenv("KEYSTORE_FILE") ?: project.findProperty("KEYSTORE_FILE") as? String
-            val repoKeystore = rootProject.file("keystore/release.jks")
-
-            if (!envKeystore.isNullOrBlank() && file(envKeystore).exists()) {
-                storeFile = file(envKeystore)
-                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: project.findProperty("KEYSTORE_PASSWORD") as? String
-                keyAlias = System.getenv("KEY_ALIAS") ?: project.findProperty("KEY_ALIAS") as? String
-                keyPassword = System.getenv("KEY_PASSWORD") ?: project.findProperty("KEY_PASSWORD") as? String
-            } else if (repoKeystore.exists()) {
-                storeFile = repoKeystore
-                storePassword = "fuckclip"
-                keyAlias = "fuckclip"
-                keyPassword = "fuckclip"
-            }
-        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            val releaseSigning = signingConfigs.getByName("release")
-            if (releaseSigning.storeFile?.exists() == true) {
-                signingConfig = releaseSigning
-            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

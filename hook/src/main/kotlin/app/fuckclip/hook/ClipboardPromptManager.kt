@@ -1,6 +1,5 @@
 package app.fuckclip.hook
 
-import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.os.Handler
@@ -11,9 +10,8 @@ import app.fuckclip.core.limiter.RogueAppLimiter
 import app.fuckclip.core.model.WhitelistRule
 import app.fuckclip.hook.model.PendingRequest
 import io.github.libxposed.api.XposedModule
-import org.json.JSONArray
 
-private const val SYNC_READ_TIMEOUT_SECONDS = 12L
+private const val WRITE_PROMPT_TIMEOUT_MS = 14_000L
 
 /**
  * Manages clipboard authorization prompt queueing, dialog display, timeout scheduling, and decision dispatch.
@@ -23,8 +21,7 @@ private const val SYNC_READ_TIMEOUT_SECONDS = 12L
 internal class ClipboardPromptManager(
     private val hook: ClipboardHook,
     private val module: XposedModule,
-    private val rogueLimiter: RogueAppLimiter,
-    private val rememberedRules: HashMap<String, Pair<Int, Int>>
+    private val rogueLimiter: RogueAppLimiter
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val pendingQueue = ArrayList<PendingRequest>()
@@ -48,24 +45,28 @@ internal class ClipboardPromptManager(
         handler.post { enqueueOnMainThread(pending) }
     }
 
+    fun expireRead(pending: PendingRequest) {
+        denyRead(pending)
+        handler.post {
+            if (pendingQueue.firstOrNull() === pending) {
+                failPendingRequest(pending, "Read prompt timed out")
+            } else if (pendingQueue.remove(pending)) {
+                rogueLimiter.onPromptFinished(pending.callerKey)
+                hook.notifyHookLog(pending.packageName, "READ", allowed = false, detail = "Read prompt timed out")
+            }
+        }
+    }
+
     /**
      * Registers a pending request and starts prompting when no dialog is currently active.
      *
      * 注册待处理请求，并在当前没有活动弹窗时立即拉起询问流程。
      */
     private fun enqueueOnMainThread(pending: PendingRequest) {
-        if (activeDialog != null) {
-            val existingIndex = pendingQueue.indexOfFirst {
-                it.packageName == pending.packageName && it.isWrite == pending.isWrite
+        if (pending.isWrite && pendingQueue.any {
+                it.isWrite && it.isClear == pending.isClear && it.callerKey == pending.callerKey
             }
-            if (existingIndex >= 0) {
-                val existing = pendingQueue[existingIndex]
-                synchronized(existing.syncList) {
-                    existing.syncList.addAll(pending.syncList)
-                }
-                return
-            }
-            pendingQueue.add(pending)
+        ) {
             return
         }
 
@@ -82,13 +83,7 @@ internal class ClipboardPromptManager(
         handler.post {
             cancelDialogTimeout()
             for (pending in pendingQueue) {
-                rogueLimiter.onPromptFinished(pending.packageName)
-                synchronized(pending.syncList) {
-                    for (sync in pending.syncList) {
-                        sync.granted.set(false)
-                        sync.latch.countDown()
-                    }
-                }
+                finishRead(pending, granted = false)
             }
             pendingQueue.clear()
             activeDialog?.dismiss()
@@ -109,6 +104,10 @@ internal class ClipboardPromptManager(
     private fun displayHeadRequest() {
         if (activeDialog != null) return
         val pending = pendingQueue.firstOrNull() ?: return
+        if (pending.readSync?.remainingMs() == 0L) {
+            failPendingRequest(pending, "Read prompt timed out")
+            return
+        }
 
         val context = hook.getSystemContext()
         if (context == null) {
@@ -145,17 +144,21 @@ internal class ClipboardPromptManager(
         val appLabel = appInfo?.loadLabel(pm) ?: pending.packageName
         val appIcon: Drawable? = appInfo?.loadIcon(pm)
 
-        val resolvedClip = pending.clipData
-            ?: ClipboardReader.readPrimaryClip(pending.thisObject, pending.userId)
-            ?: ClipboardReader.readPrimaryClip(pending.thisObject, 0)
-
-        val clipText = hook.extractClipText(resolvedClip, context)
+        val clipText = if (pending.isWrite) {
+            hook.extractClipText(pending.clipData, pending.captureContent)
+        } else {
+            val snapshot = pending.readPreviewClip?.takeIf { ReadClipboardPreview.canShow(context) }
+            hook.extractClipText(snapshot, captureContent = true, textOnly = true)?.also {
+                pending.readSync?.previewedClip = snapshot
+            }
+        }
 
         dialog.bindRequest(
             appLabel = appLabel,
             packageName = pending.packageName,
             appIcon = appIcon,
             isWrite = pending.isWrite,
+            isClear = pending.isClear,
             clipContent = clipText
         ) { granted, remember ->
             handleDecision(pending, granted, remember)
@@ -165,64 +168,39 @@ internal class ClipboardPromptManager(
             dialog.show()
         } catch (t: Throwable) {
             module.log(Log.ERROR, TAG, "Failed showing clipboard request dialog", t)
-            activeDialog = null
-            try { dialog.dismiss() } catch (_: Throwable) {}
             failPendingRequest(pending, "Denied by prompt failure (dialog display)")
             return
         }
-        scheduleDialogTimeout()
+        scheduleDialogTimeout(pending)
     }
 
     private fun handleDecision(pending: PendingRequest, granted: Boolean, remember: Boolean) {
-        cancelDialogTimeout()
-        rogueLimiter.onPromptFinished(pending.packageName)
-
-        val decidedRule = if (granted) WhitelistRule.RULE_ALLOW else WhitelistRule.RULE_DENY
-        val action = if (pending.isWrite) "WRITE" else "READ"
-        val resolvedClip = pending.clipData
-            ?: ClipboardReader.readPrimaryClip(pending.thisObject, pending.userId)
-            ?: ClipboardReader.readPrimaryClip(pending.thisObject, 0)
-        val text = hook.extractClipText(resolvedClip, hook.getSystemContext())
-
-        hook.notifyHookLog(
-            packageName = pending.packageName,
-            action = action,
-            allowed = granted,
-            detail = if (granted) "Allowed by user dialog" else "Denied by user dialog",
-            content = text
-        )
-
-        if (!remember) {
-            val prefs = try { module.getRemotePreferences(PrefKeys.PREFS_GROUP) } catch (_: Throwable) { null }
-            val denyCooldownSeconds = prefs?.getInt(
-                PrefKeys.KEY_DENY_COOLDOWN_SECONDS,
-                (RogueAppLimiter.DEFAULT_DENY_COOLDOWN_MS / 1000).toInt()
-            ) ?: (RogueAppLimiter.DEFAULT_DENY_COOLDOWN_MS / 1000).toInt()
-            val grantBurstSeconds = prefs?.getInt(
-                PrefKeys.KEY_GRANT_BURST_SECONDS,
-                (RogueAppLimiter.DEFAULT_GRANT_BURST_MS / 1000).toInt()
-            ) ?: (RogueAppLimiter.DEFAULT_GRANT_BURST_MS / 1000).toInt()
-
-            if (granted) {
-                rogueLimiter.setGrantBurstWindow(pending.packageName, grantBurstSeconds * 1000L)
-            } else {
-                rogueLimiter.setDenyCooldown(pending.packageName, denyCooldownSeconds * 1000L)
-            }
+        if (pendingQueue.firstOrNull() !== pending) return
+        if (pending.readSync?.remainingMs() == 0L) {
+            failPendingRequest(pending, "Read prompt timed out")
+            return
         }
 
-        if (remember) {
-            val currentPair = synchronized(rememberedRules) {
-                rememberedRules[pending.packageName] ?: getRulePairFromPrefs(pending.packageName)
-            }
-            val updatedPair = if (pending.isWrite) {
-                currentPair.copy(second = decidedRule)
-            } else {
-                currentPair.copy(first = decidedRule)
-            }
-            synchronized(rememberedRules) {
-                rememberedRules[pending.packageName] = updatedPair
-            }
-            hook.broadcastRuleUpdate(pending.packageName, updatedPair.first, updatedPair.second)
+        if (!pending.isWrite && !granted) denyRead(pending)
+        pending.readSync?.rememberApproval = remember
+        val decidedRule = if (granted) WhitelistRule.RULE_ALLOW else WhitelistRule.RULE_DENY
+        if (pending.isWrite || !granted) {
+            hook.notifyHookLog(
+                packageName = pending.packageName,
+                action = if (pending.isWrite) "WRITE" else "READ",
+                allowed = granted,
+                detail = when {
+                    pending.isClear && granted -> "Clipboard clear allowed by user dialog"
+                    pending.isClear -> "Clipboard clear denied by user dialog"
+                    granted -> "Allowed by user dialog"
+                    else -> "Denied by user dialog"
+                },
+                content = hook.extractClipText(pending.clipData, pending.captureContent)
+            )
+        }
+
+        if (remember && (pending.isWrite || !granted)) {
+            hook.broadcastRuleUpdate(pending.packageName, pending.isWrite, decidedRule)
         }
 
         if (pending.isWrite && granted) {
@@ -241,20 +219,13 @@ internal class ClipboardPromptManager(
      * @param detail Audit detail describing the failure cause.
      */
     private fun failPendingRequest(pending: PendingRequest, detail: String) {
-        cancelDialogTimeout()
-        rogueLimiter.onPromptFinished(pending.packageName)
-
-        val resolvedClip = pending.clipData
-            ?: ClipboardReader.readPrimaryClip(pending.thisObject, pending.userId)
-            ?: ClipboardReader.readPrimaryClip(pending.thisObject, 0)
-        val text = hook.extractClipText(resolvedClip, hook.getSystemContext())
-
+        if (!pending.isWrite) denyRead(pending)
         hook.notifyHookLog(
             packageName = pending.packageName,
             action = if (pending.isWrite) "WRITE" else "READ",
             allowed = false,
-            detail = detail,
-            content = text
+            detail = if (pending.isClear) "Clipboard clear: $detail" else detail,
+            content = hook.extractClipText(pending.clipData, pending.captureContent)
         )
 
         settlePendingRequest(pending, granted = false)
@@ -269,55 +240,42 @@ internal class ClipboardPromptManager(
      * @param granted Whether clipboard access was granted.
      */
     private fun settlePendingRequest(pending: PendingRequest, granted: Boolean) {
-        synchronized(pending.syncList) {
-            for (sync in pending.syncList) {
-                sync.granted.set(granted)
-                sync.latch.countDown()
-            }
-        }
-
+        cancelDialogTimeout()
+        pendingQueue.remove(pending)
+        val dialog = activeDialog
         activeDialog = null
-        val resolvedIndex = pendingQueue.indexOfFirst { it === pending }
-        if (resolvedIndex >= 0) {
-            pendingQueue.removeAt(resolvedIndex)
-        }
-
-        if (pendingQueue.isNotEmpty()) {
-            displayHeadRequest()
-        }
+        dialog?.dismiss()
+        finishRead(pending, granted)
+        handler.post { displayHeadRequest() }
     }
 
-    private fun getRulePairFromPrefs(packageName: String): Pair<Int, Int> {
-        try {
-            val prefs = module.getRemotePreferences(PrefKeys.PREFS_GROUP)
-            val raw = prefs.getString(PrefKeys.KEY_WHITELIST, null)
-            if (!raw.isNullOrBlank()) {
-                val array = JSONArray(raw)
-                for (i in 0 until array.length()) {
-                    val obj = array.optJSONObject(i) ?: continue
-                    if (obj.optString("packageName") == packageName) {
-                        return Pair(
-                            obj.optInt("readRule", WhitelistRule.RULE_REQUEST),
-                            obj.optInt("writeRule", WhitelistRule.RULE_REQUEST)
-                        )
-                    }
-                }
+    private fun finishRead(pending: PendingRequest, granted: Boolean) {
+        val sync = pending.readSync ?: return
+        rogueLimiter.onPromptFinished(pending.callerKey)
+        synchronized(sync) {
+            val remaining = sync.remainingMs()
+            if (granted && remaining > 0) {
+                sync.approval = rogueLimiter.beginReadGrant(pending.callerKey, remaining)
+                sync.granted.set(true)
             }
-        } catch (_: Throwable) {}
-        return Pair(WhitelistRule.RULE_REQUEST, WhitelistRule.RULE_REQUEST)
+            sync.latch.countDown()
+        }
     }
 
-    private fun scheduleDialogTimeout() {
+    private fun denyRead(pending: PendingRequest) {
+        val duration = hook.readSettingMs(PrefKeys.KEY_DENY_COOLDOWN_SECONDS, RogueAppLimiter.DEFAULT_DENY_COOLDOWN_MS)
+        rogueLimiter.setDenyCooldown(pending.callerKey, duration)
+    }
+
+    private fun scheduleDialogTimeout(pending: PendingRequest) {
         cancelDialogTimeout()
         val r = Runnable {
-            activeDialog?.let { dialog ->
-                if (dialog.isShowing) {
-                    dialog.dismiss()
-                }
+            if (pendingQueue.firstOrNull() === pending) {
+                failPendingRequest(pending, "Authorization prompt timed out")
             }
         }
         dialogTimeoutRunnable = r
-        handler.postDelayed(r, (SYNC_READ_TIMEOUT_SECONDS + 2) * 1000L)
+        handler.postDelayed(r, pending.readSync?.remainingMs() ?: WRITE_PROMPT_TIMEOUT_MS)
     }
 
     private fun cancelDialogTimeout() {

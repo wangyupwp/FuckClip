@@ -14,7 +14,7 @@ FuckClip 采用高内聚、低耦合的多模块组件化设计：
 flowchart TD
     subgraph SystemServer["system_server 进程 (Android Framework)"]
         AOSP["原生 ClipboardService"]
-        SAMSUNG["三星 SemClipboardService"]
+        SAMSUNG["IClipboard.Stub 发现兜底"]
         HOOK[":hook 模块 (LibXposed API 102)"]
         LIMITER["毒瘤应用限流引擎 (RogueAppLimiter)"]
         PROMPT["异步防死锁弹窗 (ClipboardPromptManager)"]
@@ -65,13 +65,10 @@ flowchart TD
 - **定位**：工作在 Android 核心系统进程 `system_server` 中，基于 LibXposed API 102 现代标准。
 - **挂钩拦截策略**：
   - **原生 AOSP 服务**：挂钩 `com.android.server.clipboard.ClipboardService` 的 `getPrimaryClip`、`setPrimaryClip` 等核心 Binder 接口。
-  - **三星定制服务**：挂钩 `com.samsung.android.content.clipboard.SemClipboardService` 等专有接口。
-- **内部安全读取与反射代理**：
-  - 为在弹出授权对话框前向用户呈现剪贴板预览内容，Hook 层直接通过底层内部变量或反射获取数据，避免重入再次触发外部审计监听器。
-- **异步安全调度与防死锁设计**：
-  - `system_server` 的 Binder 线程资源极其宝贵，不可长时间阻塞。
-  - 挂钩拦截请求后，将任务封装为 `PendingRequest`，通过主线程 Looper 或专用 Handler 异步拉起授权对话框。
-  - 设置严格的响应超时机制（Safety Timeout），超时未响应时安全降级返回，彻底杜绝系统主服务挂起或软重启风险。
+  - **定制 ROM 兜底**：从 `IClipboard.Stub.onTransact` 发现实际服务实例。
+- **读取权限**：模块允许后，Android 原生服务继续执行访问检查。读取弹窗不读取缓存，审计日志只可记录原生服务返回的内容。
+- **授权调度**：弹窗由主线程展示。最多四个 Binder 读取调用等待授权，每个读取请求从入队起最多等待 12 秒，超时会退出队列。
+- **跨进程规则**：`system_server` 向管理端的非导出接收器发送定向广播。管理端只更新用户决定的操作方向，Hook 从远程偏好读取最新规则。
 
 ---
 
@@ -94,5 +91,5 @@ flowchart TD
 FuckClip is structured into three distinct modules to ensure separation of concerns and maintainability:
 
 1. **`:core`**: Pure domain models and algorithm components. Contains `WhitelistRule`, `HookLog`, `RogueAppLimiter`, and shared constants. Does not depend on Android UI or Xposed libraries.
-2. **`:hook`**: LibXposed API 102 implementation injected into `system_server`. Intercepts clipboard read/write events across AOSP and Samsung ClipService instances, parses data via internal reflection proxies, and dispatches UI requests via an asynchronous deadlock-free queue.
+2. **`:hook`**: LibXposed API 102 implementation injected into `system_server`. It intercepts clipboard reads and writes, respects Android's access checks, and queues prompts with bounded read concurrency and per-request deadlines.
 3. **`:app`**: Modern Jetpack Compose & Material 3 application. Powered by Koin dependency injection, StateFlow state machines, dynamic theming palettes, and robust JSON backup/restore tools.

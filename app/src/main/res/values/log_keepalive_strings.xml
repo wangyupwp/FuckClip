@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_log_keepalive_title">Keep audit log active</string>
+    <string name="settings_log_keepalive_summary">Show a notification to keep receiving audit events in the background.</string>
+    <string name="log_keepalive_notification_title">Audit log is active</string>
+    <string name="log_keepalive_notification_body">Receiving clipboard audit events in the background.</string>
+    <string name="log_keepalive_stop">Stop log keep-alive</string>
+    <string name="log_keepalive_notifications_required">Allow notifications for FuckClip and its audit log channel, then turn this switch on again.</string>
+    <string name="log_keepalive_open_notification_settings">Open notification settings</string>
+    <string name="log_keepalive_start_failed">Could not start log keep-alive. Try again while the app is open.</string>
+</resources>

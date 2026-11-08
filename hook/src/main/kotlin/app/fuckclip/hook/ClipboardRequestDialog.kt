@@ -403,6 +403,7 @@ internal class ClipboardRequestDialog(
         packageName: String,
         appIcon: Drawable?,
         isWrite: Boolean,
+        isClear: Boolean,
         clipContent: CharSequence?,
         callback: (granted: Boolean, remember: Boolean) -> Unit
     ) {
@@ -429,7 +430,7 @@ internal class ClipboardRequestDialog(
                 strokeWidthPx = dp(1f)
             )
 
-            promptNoticeView.text = strings.promptNoticeWrite
+            promptNoticeView.text = if (isClear) strings.promptNoticeClear else strings.promptNoticeWrite
             previewHeaderLabel.text = strings.previewHeaderWrite
         } else {
             actionBadgeView.text = strings.badgeRead
@@ -445,6 +446,11 @@ internal class ClipboardRequestDialog(
             previewHeaderLabel.text = strings.previewHeaderRead
         }
 
+        if (!isWrite) {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
+            window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        previewContainer.visibility = if (!isClear && (isWrite || !clipContent.isNullOrEmpty())) View.VISIBLE else View.GONE
         val text = clipContent?.toString()
         if (text.isNullOrEmpty()) {
             previewBodyText.text = strings.previewEmpty
