@@ -14,15 +14,17 @@ import java.net.URL
  */
 object UpdateChecker {
 
+    private const val REPO = "wangyupwp/FuckClip"
+
     /**
      * Canonical GitHub repository URL for FuckClip.
      *
      * FuckClip 的官方 GitHub 开源仓库 URL。
      */
-    const val REPO_URL = "https://github.com/Cail-Gainey/FuckClip"
+    const val REPO_URL = "https://github.com/$REPO"
 
     private const val LATEST_RELEASE_API =
-        "https://api.github.com/repos/Cail-Gainey/FuckClip/releases/latest"
+        "https://api.github.com/repos/$REPO/releases/latest"
 
     /**
      * Queries GitHub API synchronously for the latest release metadata. Must be executed on an IO dispatcher.

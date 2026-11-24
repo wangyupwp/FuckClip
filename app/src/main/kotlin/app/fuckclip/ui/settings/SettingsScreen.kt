@@ -255,7 +255,7 @@ fun SettingsScreen(
                 SettingsActionRow(
                     icon = Icons.Default.Code,
                     title = stringResource(R.string.about_github),
-                    subtitle = stringResource(R.string.about_github_url),
+                    subtitle = viewModel.repoUrl,
                     onClick = {
                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(viewModel.repoUrl))
                         context.startActivity(intent)

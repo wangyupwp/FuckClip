@@ -39,7 +39,7 @@ FuckClip 是一个 Android 剪贴板权限管理模块。它通过 [LibXposed AP
 
 - 在 **设置 → 数据** 导入或导出 JSON 格式的应用规则。规则备份不包含使用记录。
 - 支持简体中文、繁體中文和英语。可切换浅色、深色、纯黑和跟随系统主题，也可在支持的设备上使用动态配色。
-- 应用内更新目前检查上游的 [GitHub Releases](https://github.com/Cail-Gainey/FuckClip/releases)，可下载匹配架构的 APK 并交由 Android 安装器处理。
+- 应用内更新检查 [wangyupwp/FuckClip 的 GitHub Releases](https://github.com/wangyupwp/FuckClip/releases)，可下载匹配架构的 APK 并交由 Android 安装器处理。
 
 ## 本地构建
 
